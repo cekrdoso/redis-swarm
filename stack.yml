@@ -12,10 +12,28 @@ services:
       restart_policy:
         condition: on-failure
 
+  redis-slave:
+    image: redis
+    command: redis-server --slaveof redis-master 6379
+    networks:
+      - net-redis
+    deploy:
+      mode: replicated
+      replicas: 2
+      endpoint_mode: dnsrr
+      restart_policy:
+        condition: on-failure
+
   redis-sentinel:
     image: redis
     networks:
       - net-redis
+    deploy:
+      mode: replicated
+      replicas: 2
+      endpoint_mode: dnsrr
+      restart_policy:
+        condition: always
     command:
       - /bin/bash
       - -c
