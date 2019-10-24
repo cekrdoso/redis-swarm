@@ -1,0 +1,37 @@
+version: '3.7'
+services:
+
+  redis-master:
+    image: redis
+    networks:
+      - net-redis
+    deploy:
+      mode: replicated
+      replicas: 1
+      endpoint_mode: dnsrr
+      restart_policy:
+        condition: on-failure
+
+  redis-sentinel:
+    image: redis
+    networks:
+      - net-redis
+    command:
+      - /bin/bash
+      - -c
+      - |
+        cat <<EOF >/data/sentinel.conf
+        port 5000
+        sentinel monitor mymaster redis-master 6379 2
+        sentinel down-after-milliseconds mymaster 5000
+        sentinel failover-timeout mymaster 60000
+        sentinel parallel-syncs mymaster 1
+        EOF
+        cat /data/sentinel.conf
+        chown redis:redis /data/sentinel.conf
+        ls -l /data/sentinel.conf
+        exec gosu redis redis-server /data/sentinel.conf --sentinel
+
+networks:
+  net-redis:
+    external: true
