@@ -1,8 +1,12 @@
 version: '3.7'
 services:
 
-  redis-master:
-    image: redis
+  redis-init:
+    image: cekrdoso/redis-swarm
+    environment:
+      REDIS_ROLE: init
+      NUM_OF_SLAVES: 3
+      NUM_OF_SENTINELS: 3
     networks:
       - net-redis
     deploy:
@@ -12,41 +16,27 @@ services:
       restart_policy:
         condition: on-failure
 
-  redis-slave:
-    image: redis
-    command: redis-server --slaveof redis-master 6379
-    networks:
-      - net-redis
-    deploy:
-      mode: replicated
-      replicas: 2
-      endpoint_mode: dnsrr
-      restart_policy:
-        condition: on-failure
-
-  redis-sentinel:
-    image: redis
+  redis:
+    image: cekrdoso/redis-swarm
+    environment:
+      REDIS_ROLE: slave
     networks:
       - net-redis
     deploy:
       mode: replicated
       replicas: 3
       endpoint_mode: dnsrr
-    command:
-      - /bin/bash
-      - -c
-      - |
-        cat <<EOF >/data/sentinel.conf
-        port 5000
-        sentinel monitor mymaster redis-master 6379 2
-        sentinel down-after-milliseconds mymaster 5000
-        sentinel failover-timeout mymaster 60000
-        sentinel parallel-syncs mymaster 1
-        EOF
-        cat /data/sentinel.conf
-        chown redis:redis /data/sentinel.conf
-        ls -l /data/sentinel.conf
-        exec gosu redis redis-server /data/sentinel.conf --sentinel
+
+  redis-sentinel:
+    image: cekrdoso/redis-swarm
+    environment:
+      REDIS_ROLE: sentinel
+    networks:
+      - net-redis
+    deploy:
+      mode: replicated
+      replicas: 3
+      endpoint_mode: dnsrr
 
 networks:
   net-redis:
