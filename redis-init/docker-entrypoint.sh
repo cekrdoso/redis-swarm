@@ -3,8 +3,9 @@
 REDIS_ROLE=${REDIS_ROLE:-"undefined"}
 SENTINEL_HOSTNAME=${SENTINEL_HOSTNAME:-"redis-sentinel"}
 SENTINEL_PORT=${SENTINEL_PORT:-26379}
-REDIS_MASTER_HOSTNAME=${REDIS_MASTER_HOSTNAME:-"redis-init"}
 REDIS_MASTER_NAME=${REDIS_MASTER_NAME:-"mymaster"}
+REDIS_MASTER_HOSTNAME=${REDIS_MASTER_HOSTNAME:-"redis-init"}
+REDIS_SLAVES_HOSTNAME=${REDIS_SLAVES_HOSTNAME:-"redis"}
 NUM_OF_SENTINELS=${NUM_OF_SENTINELS:-3}
 NUM_OF_SLAVES=${NUM_OF_SLAVES:-1}
 SENTINELS_QUORUM=${SENTINELS_QUORUM:-$((NUM_OF_SENTINELS - 1))}
@@ -21,14 +22,11 @@ get_bulk_value() {
 	local key=$1; shift
 	local command=$@
 
-	#echo "[get_bulk_value] iplist=\"${iplist[@]}\" port=\"${port}\" key=\"${key}\" command=\"${command}\"" >&2
-
 	local value=null
 	local value_list=()
 	local c=0
 	while [ $c -lt ${#iplist[@]} ]; do
 		local v=$(redis-cli -h ${iplist[$c]} -p ${port} ${command} | grep -A1 ${key} | tail -1)
-		#echo "[get_bulk_value] v=${v}" >&2
 		if [ "${v}x" != "x" ]; then
 			value_list[$c]="${v}"
 		else
@@ -49,14 +47,10 @@ compare_values() {
 
 		[ $c -eq 0 ] && l_value=${value:-null}
 
-		#echo "[compare_values] comparing ${value} with ${l_value}" >&2
-
 		if [ "${value}x" != "${l_value}x" ]; then
-			echo "[compare_values] values don't match" >&2
+			echo "[compare_values] values don't match: ${valuelist[@]}" >&2
 			return 1
 		fi
-
-		#echo "[compare_values] ok" >&2
 
 		l_value=${value}
 		c=$((c + 1))
@@ -105,19 +99,20 @@ find_sentinels() {
 }
 
 find_master() {
-	local iplist="$1"
 	local m=null
-	local r=10
-	while [ $r -gt 0 ]; do
-		echo "[find_master] iplist=${iplist}" >&2
-		m=$(get_bulk_value "${iplist}" $SENTINEL_PORT \
-					ip SENTINEL master $REDIS_MASTER_NAME)
-		echo "[find_master] m=${m}" >&2
-		[ "${m}x" != "nullx" ] && break
-		r=$((r - 1))
-		sleep 3
+	local success=0
+	for host in $REDIS_MASTER_HOSTNAME $REDIS_SLAVES_HOSTNAME; do
+		for l in $(getent hosts ${host} | awk '{ print $1 }'); do
+			[ "${l}x" == "${self_address}x" ] && continue
+			if check_master ${l}; then
+				success=1
+				m=${l}
+				break
+			fi
+		done
+		[ ${success} -eq 1 ] && break
 	done
-	echo "[find_master] Found master: ${m:-null}" >&2
+	echo "[find_master] master: ${m:-null}" >&2
 	echo ${m:-null}
 }
 
@@ -177,7 +172,7 @@ case $REDIS_ROLE in
 				retries=10
 				master=null
 				while [ ${retries} -gt 0 ]; do
-					master=$(find_master "${sentinel_ips}")
+					master=$(find_master)
 					[ "${master}x" != "nullx" ] && break
 					retries=$((retries - 1))
 					sleep 3
@@ -226,13 +221,23 @@ case $REDIS_ROLE in
 			abort "Error: sentinels did not met quorum. Exiting."
 		fi
 
-		retries=10
+		retries=60
 		while [ ${retries} -gt 0 ]; do
-			
-			slave_count=$(get_bulk_value "${sentinel_ips}" $SENTINEL_PORT \
-								num-slaves SENTINEL master $REDIS_MASTER_NAME)
 
-			[ "${slave_count}x" == "nullx" ] && slave_count=0
+			echo "Waiting for all slaves to come up: ${slave_count:-0}/${NUM_OF_SLAVES}"
+
+			slave_list=()
+			i=0
+			while IFS= read -r LINE; do
+				eval ${LINE//,/ }
+				slave_list[$i]=${ip}
+				echo "[init] Pinging slave ${ip}" >&2
+				redis-cli -h ${ip} PING >&2
+				unset ip port state offset lag LINE
+				i=$((i + 1))
+			done < <(redis-cli INFO replication | awk -F : '/^slave[0-9]/ { print $2 }')
+
+			slave_count=${#slave_list[@]}
 
 			if [ ${slave_count} -ge ${NUM_OF_SLAVES} ]; then
 				# Slaves are up
@@ -241,12 +246,19 @@ case $REDIS_ROLE in
 
 			echo "Waiting for all slaves to come up: ${slave_count}/${NUM_OF_SLAVES}"
 			retries=$((retries - 1))
-			sleep 3
+			sleep 1
 		done
 		if [ ${retries} -eq 0 ]; then
 			kill -9 `pidof redis-server`
 			abort "Error: slaves failed to come up. Exiting."
 		fi
+
+		retries=30
+		while [ ${retries} -gt 0 ]; do
+			redis-cli -h ${slave_list[0]} INFO replication >&2
+			retries=$((retries - 1))
+			sleep 1
+		done
 
 		echo "All slaves are up, forcing failover..."
 		while ! \
@@ -257,7 +269,7 @@ case $REDIS_ROLE in
 
 		retries=10
 		while [ ${retries} -gt 0 ]; do
-			new_master=$(find_master "${sentinel_ips}")
+			new_master=$(find_master)
 			if [ "${new_master}x" != "nullx" -a ${new_master} != ${self_address} ]; then
 				echo "Failover finished. New master is ${new_master}..."
 				break
@@ -298,7 +310,7 @@ case $REDIS_ROLE in
 		master=null
 		echo "Searching master..."
 		while [ ${retries} -gt 0 ]; do
-			master=$(find_master "${sentinel_ips}")
+			master=$(find_master)
 			echo "Found master=${master}"
 			[ "${master}x" != "nullx" ] && break
 			retries=$((retries - 1))
