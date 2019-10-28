@@ -158,27 +158,19 @@ case $REDIS_ROLE in
 		if check_master "${REDIS_MASTER_HOSTNAME}"; then
 			master=${REDIS_MASTER_HOSTNAME}
 		else
-			while : ; do
-				# Search for sentinels
-				retries=10
-				while [ ${retries} -gt 0 ]; do
-					sentinel_ips=$(find_sentinels)
-					[ "${sentinel_ips}x" != "nullx" ] && break
-					retries=$((retries - 1))
-					sleep 3
-				done
-
-				# Find master
-				retries=10
-				master=null
-				while [ ${retries} -gt 0 ]; do
-					master=$(find_master)
-					[ "${master}x" != "nullx" ] && break
-					retries=$((retries - 1))
-					sleep 3
-				done
-				check_master "${master}" && break
+			# Find master
+			retries=10
+			master=null
+			while [ ${retries} -gt 0 ]; do
+				master=$(find_master)
+				[ "${master}x" != "nullx" ] && break
+				echo "[sentinel] Could not find master, waiting..."
+				retries=$((retries - 1))
+				sleep 5
 			done
+		fi
+		if [ "${master}x" == "nullx" ]; then
+			abort "[sentinel] Error: Could not find master, exiting."
 		fi
 
 		cat <<-EOF > /sentinel.conf
@@ -192,12 +184,12 @@ case $REDIS_ROLE in
 		exec gosu redis redis-server /sentinel.conf --sentinel
 	;;
 	init)
-		echo "Starting redis-init..."
+		echo "[init] Starting redis-init..."
 		redis-server --port 6379 &
 		sleep 5
 
 		while [ "$(redis-cli ping)x" != "PONGx" ]; do
-			echo "Waiting redis-init startup..."
+			echo "[init] Waiting redis-init startup..."
 			sleep 3
 		done
 
@@ -210,31 +202,34 @@ case $REDIS_ROLE in
 		echo "[init] Sentinels: ${sentinel_ips}"
 
 		# Check quorum
-		retries=10
+		retries=30
 		while ! check_quorum "${sentinel_ips}" && [ ${retries} -gt 0 ]; do
-			echo "Waiting for sentinels to meet defined quorum..."
+			echo "[init] Waiting for sentinels to meet defined quorum..."
 			retries=$((retries - 1))
 			sleep 3
 		done
 		if [ ${retries} -eq 0 ]; then
 			kill -9 `pidof redis-server`
-			abort "Error: sentinels did not met quorum. Exiting."
+			abort "[init] Error: sentinels did not met quorum. Exiting."
 		fi
 
-		retries=60
+		retries=30
 		while [ ${retries} -gt 0 ]; do
-
-			echo "Waiting for all slaves to come up: ${slave_count:-0}/${NUM_OF_SLAVES}"
 
 			slave_list=()
 			i=0
 			while IFS= read -r LINE; do
 				eval ${LINE//,/ }
-				slave_list[$i]=${ip}
-				echo "[init] Pinging slave ${ip}" >&2
-				redis-cli -h ${ip} PING >&2
+				echo -n "[init] Pinging slave ${ip}... "
+				redis-cli -h ${ip} PING >/dev/null 2>&1
+				if [ $? -eq 0 ]; then
+					echo "OK"
+					slave_list[$i]=${ip}
+					i=$((i + 1))
+				else
+					echo "ERR"
+				fi
 				unset ip port state offset lag LINE
-				i=$((i + 1))
 			done < <(redis-cli INFO replication | awk -F : '/^slave[0-9]/ { print $2 }')
 
 			slave_count=${#slave_list[@]}
@@ -244,23 +239,17 @@ case $REDIS_ROLE in
 				break
 			fi
 
-			echo "Waiting for all slaves to come up: ${slave_count}/${NUM_OF_SLAVES}"
+			echo "[init] Waiting for all slaves to come up: ${slave_count:-0}/${NUM_OF_SLAVES}"
+
 			retries=$((retries - 1))
 			sleep 1
 		done
 		if [ ${retries} -eq 0 ]; then
 			kill -9 `pidof redis-server`
-			abort "Error: slaves failed to come up. Exiting."
+			abort "[init] Error: slaves failed to come up. Exiting."
 		fi
 
-		retries=30
-		while [ ${retries} -gt 0 ]; do
-			redis-cli -h ${slave_list[0]} INFO replication >&2
-			retries=$((retries - 1))
-			sleep 1
-		done
-
-		echo "All slaves are up, forcing failover..."
+		echo "[init] All slaves are up, forcing failover..."
 		while ! \
 			redis-cli -h ${SENTINEL_HOSTNAME} -p ${SENTINEL_PORT} SENTINEL failover ${REDIS_MASTER_NAME}; do
 			sleep 3
@@ -271,52 +260,50 @@ case $REDIS_ROLE in
 		while [ ${retries} -gt 0 ]; do
 			new_master=$(find_master)
 			if [ "${new_master}x" != "nullx" -a ${new_master} != ${self_address} ]; then
-				echo "Failover finished. New master is ${new_master}..."
+				echo "[init] Failover finished. New master is ${new_master}..."
 				break
 			else
-				echo "Waiting failover to finish..."
+				echo "[init] Waiting failover to finish..."
 			fi
 			retries=$((retries - 1))
 			sleep 3
 		done
 		if [ ${retries} -eq 0 ]; then
 			kill -9 `pidof redis-server`
-			abort "Error: failover failed. Exiting."
+			abort "[init] Error: failover failed. Exiting."
 		fi
 
-		echo "Finished!"
+		echo "[init] Finished!"
+		redis-cli REPLICAOF NO ONE
+		sleep 60
 		redis-cli SHUTDOWN NOSAVE
-		sleep 10
 
 		for ip in ${sentinel_ips}; do
 			redis-cli -h ${ip} -p ${SENTINEL_PORT} SENTINEL RESET ${REDIS_MASTER_NAME}
 		done
 	;;
 	slave)
-		echo "Starting slave..."
+		# Find sentinels
+		echo "[slave] Searching sentinels..."
+		sentinel_ips=$(find_sentinels)
 
-		# Search for sentinels
-		retries=10
-		while [ ${retries} -gt 0 ]; do
-			sentinel_ips=$(find_sentinels)
-			[ "${sentinel_ips}x" != "nullx" ] && break
-			retries=$((retries - 1))
-			sleep 3
-		done
-		echo "Sentinels found: ${sentinel_ips}"
+		# Check quorum
+		echo "[slave] Checking quorum..."
+		check_quorum "${sentinel_ips}"
 
 		# Find master
 		retries=10
 		master=null
-		echo "Searching master..."
+		echo "[slave] Searching master..."
 		while [ ${retries} -gt 0 ]; do
 			master=$(find_master)
-			echo "Found master=${master}"
+			echo "[slave] Found master: ${master}"
 			[ "${master}x" != "nullx" ] && break
 			retries=$((retries - 1))
-			sleep 3
+			sleep 5
 		done
 
+		echo "[slave] Starting slave..."
 		exec gosu redis redis-server --port 6379 --replicaof ${master} 6379
 	;;
 	*)
