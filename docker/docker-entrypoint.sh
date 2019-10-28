@@ -184,7 +184,26 @@ case $REDIS_ROLE in
 		exec gosu redis redis-server /sentinel.conf --sentinel
 	;;
 	init)
+		# Check if a master already exist
+		master=$(find_master)
+		if [ "${master}x" != "nullx" ]; then
+			echo "[init] A master already exist: ${master}"
+			sentinel_ips=$(find_sentinels)
+			echo "[init] Sentinels are: ${sentinel_ips}"
+			if [ "${sentinel_ips}x" != "nullx" ]; then
+				check_quorum "${sentinel_ips}" && \
+					echo "[init] Quorum is ok" || \
+					echo "[init] Quorum is not ok."
+				for ip in ${sentinel_ips}; do
+					m=$(redis-cli -h ${ip} -p ${SENTINEL_PORT} SENTINEL get-master-addr-by-name ${REDIS_MASTER_NAME} | head -1)
+					echo "[init] sentinel=${ip}, master=${m:-null}"
+				done
+			fi
+			exit 0
+		fi
+
 		echo "[init] Starting redis-init..."
+		rm -rf dump.rdb
 		redis-server --port 6379 &
 		sleep 5
 
@@ -249,6 +268,7 @@ case $REDIS_ROLE in
 			abort "[init] Error: slaves failed to come up. Exiting."
 		fi
 
+		sleep 60
 		echo "[init] All slaves are up, forcing failover..."
 		while ! \
 			redis-cli -h ${SENTINEL_HOSTNAME} -p ${SENTINEL_PORT} SENTINEL failover ${REDIS_MASTER_NAME}; do
@@ -274,9 +294,8 @@ case $REDIS_ROLE in
 		fi
 
 		echo "[init] Finished!"
-		redis-cli REPLICAOF NO ONE
-		sleep 60
 		redis-cli SHUTDOWN NOSAVE
+		sleep 60
 
 		for ip in ${sentinel_ips}; do
 			redis-cli -h ${ip} -p ${SENTINEL_PORT} SENTINEL RESET ${REDIS_MASTER_NAME}
@@ -304,6 +323,7 @@ case $REDIS_ROLE in
 		done
 
 		echo "[slave] Starting slave..."
+		rm -rf dump.rdb
 		exec gosu redis redis-server --port 6379 --replicaof ${master} 6379
 	;;
 	*)
