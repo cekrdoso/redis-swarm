@@ -269,7 +269,7 @@ case $REDIS_ROLE in
 		fi
 
 		sleep 60
-		echo "[init] All slaves are up, forcing failover..."
+		echo -n "[init] All slaves are up, forcing failover..."
 		while ! \
 			redis-cli -h ${SENTINEL_HOSTNAME} -p ${SENTINEL_PORT} SENTINEL failover ${REDIS_MASTER_NAME}; do
 			sleep 3
@@ -293,13 +293,16 @@ case $REDIS_ROLE in
 			abort "[init] Error: failover failed. Exiting."
 		fi
 
-		echo "[init] Finished!"
+		echo "[init] Shuting down redis-init instance:"
 		redis-cli SHUTDOWN NOSAVE
 		sleep 60
 
+		echo "[init] Reseting sentinels:"
 		for ip in ${sentinel_ips}; do
 			redis-cli -h ${ip} -p ${SENTINEL_PORT} SENTINEL RESET ${REDIS_MASTER_NAME}
 		done
+
+		echo "[init] Done."
 	;;
 	slave)
 		# Find sentinels
