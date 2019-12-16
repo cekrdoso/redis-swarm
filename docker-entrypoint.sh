@@ -8,6 +8,7 @@ REDIS_MASTER_HOSTNAME=${REDIS_MASTER_HOSTNAME:-"redis-init"}
 REDIS_SLAVES_HOSTNAME=${REDIS_SLAVES_HOSTNAME:-"redis"}
 NUM_OF_SENTINELS=${NUM_OF_SENTINELS:-3}
 NUM_OF_SLAVES=${NUM_OF_SLAVES:-1}
+EXPECT_SENTINELS_QUORUM=${EXPECT_SENTINELS_QUORUM:-"true"}
 SENTINELS_QUORUM=${SENTINELS_QUORUM:-$((NUM_OF_SENTINELS - 1))}
 
 get_self_address() {
@@ -136,11 +137,19 @@ check_quorum() {
 	local iplist="$1"
 	local port=${SENTINEL_PORT}
 	local command="SENTINEL ckquorum ${REDIS_MASTER_NAME}"
-	for ip in ${iplist}; do
-		local v=$(redis-cli -h ${ip} -p ${port} ${command} 2>/dev/null | grep -e "^OK")
-		[ -z "${v}" ] && echo "[check_quorum] Quorum was not reached" >&2 && return 1
-	done
-	echo "[check_quorum] Quorum was reached" >&2
+
+	if [ ${EXPECT_SENTINELS_QUORUM} = "true" ]; then
+
+		for ip in ${iplist}; do
+			local v=$(redis-cli -h ${ip} -p ${port} ${command} 2>/dev/null | grep -e "^OK")
+			[ -z "${v}" ] && echo "[check_quorum] Quorum was not reached" >&2 && return 1
+		done
+		echo "[check_quorum] Quorum was reached" >&2
+
+	else
+		echo "[check_quorum] Sentinels quorum is not expected, ignoring." >&2
+	fi
+
 	return 0
 }
 
@@ -221,15 +230,19 @@ case $REDIS_ROLE in
 		echo "[init] Sentinels: ${sentinel_ips}"
 
 		# Check quorum
-		retries=30
-		while ! check_quorum "${sentinel_ips}" && [ ${retries} -gt 0 ]; do
-			echo "[init] Waiting for sentinels to meet defined quorum..."
-			retries=$((retries - 1))
-			sleep 3
-		done
-		if [ ${retries} -eq 0 ]; then
-			kill -9 `pidof redis-server`
-			abort "[init] Error: sentinels did not met quorum. Exiting."
+		if [ "${EXPECT_SENTINELS_QUORUM}" = "true" ]; then
+
+			retries=30
+			while ! check_quorum "${sentinel_ips}" && [ ${retries} -gt 0 ]; do
+				echo "[init] Waiting for sentinels to meet defined quorum..."
+				retries=$((retries - 1))
+				sleep 3
+			done
+			if [ ${retries} -eq 0 ]; then
+				kill -9 `pidof redis-server`
+				abort "[init] Error: sentinels did not met quorum. Exiting."
+			fi
+
 		fi
 
 		retries=30
