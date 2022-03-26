@@ -5,7 +5,7 @@ services:
     image: cekrdoso/redis-swarm
     environment:
       REDIS_ROLE: init
-      NUM_OF_SLAVES: 3
+      NUM_OF_REPLICAS: 3
       NUM_OF_SENTINELS: 3
     networks:
       - net-redis
@@ -19,7 +19,7 @@ services:
   redis:
     image: cekrdoso/redis-swarm
     environment:
-      REDIS_ROLE: slave
+      REDIS_ROLE: replica
     networks:
       - net-redis
     deploy:
