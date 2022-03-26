@@ -1,8 +1,7 @@
-version: '3.7'
+version: "3.7"
 services:
-
   redis-init:
-    image: cekrdoso/redis-swarm
+    image: local/redis-swarm
     environment:
       REDIS_ROLE: init
       NUM_OF_REPLICAS: 3
@@ -17,7 +16,7 @@ services:
         condition: on-failure
 
   redis:
-    image: cekrdoso/redis-swarm
+    image: local/redis-swarm
     environment:
       REDIS_ROLE: replica
     networks:
@@ -28,7 +27,7 @@ services:
       endpoint_mode: dnsrr
 
   redis-sentinel:
-    image: cekrdoso/redis-swarm
+    image: local/redis-swarm
     environment:
       REDIS_ROLE: sentinel
     networks:
@@ -37,6 +36,17 @@ services:
       mode: replicated
       replicas: 3
       endpoint_mode: dnsrr
+
+  # debug:
+  #   image: local/redis-swarm
+  #   environment:
+  #     REDIS_ROLE: debug
+  #   networks:
+  #     - net-redis
+  #   deploy:
+  #     mode: replicated
+  #     replicas: 1
+  #     endpoint_mode: dnsrr
 
 networks:
   net-redis:

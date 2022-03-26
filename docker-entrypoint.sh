@@ -85,7 +85,7 @@ find_sentinels() {
 		done
 
 		if [ $success -eq 1 ]; then
-			echo "[find_sentinels] Sentinels found: ${sentinels[@]}" >&2
+			echo "[find_sentinels] sentinels found: ${sentinels[@]}" >&2
 			echo ${sentinels[@]}
 			return 0
 		fi
@@ -94,7 +94,7 @@ find_sentinels() {
 		sleep ${wait}
 	done
 
-	echo "[find_sentinels] Sentinels found: null" >&2
+	echo "[find_sentinels] sentinels found: null" >&2
 	echo null
 	return 1
 }
@@ -103,9 +103,12 @@ find_master() {
 	local m=null
 	local success=0
 	for host in $REDIS_MASTER_HOSTNAME $REDIS_REPLICAS_HOSTNAME; do
+		echo "[find_master] host: ${host}" >&2
 		for l in $(getent hosts ${host} | awk '{ print $1 }'); do
 			[ "${l}x" == "${self_address}x" ] && continue
+			echo "[find_master] checking master: ${l}" >&2
 			if check_master ${l}; then
+				echo "[find_master] master found: ${l}" >&2
 				success=1
 				m=${l}
 				break
@@ -122,23 +125,15 @@ check_master() {
 	local role=null
 	retries=3
 	while [ ${retries} -gt 0 ]; do
-
-		role=$(redis-cli -h ${m} -p 6379 INFO replication 2>/dev/null | \
-					awk -F : '/^role:/ { print $2 }' || echo null)
-		
-		[ "${role}x" != "nullx" ] && break
-
-		echo "[check_master] Could not connect to master: ${m}" >&2
+		echo "[check_master] checking: ${m}" >&2
+		role=$((redis-cli -h ${m} INFO replication 2>/dev/null || echo 'role:ERROR') | \
+                    tr -d '\r' | awk -F : '/^role:/ { print $2 }')
+		echo "[check_master] role: \"${role}\"" >&2
+		[ "${role}x" != "ERRORx" ] && break
 		retries=$((retries - 1))
 		sleep 3
 	done
-
-	if [ "${role}x" == "masterx" ]; then
-		echo "[check_master] Master is ok" >&2
-		return 0
-	else
-		return 1
-	fi
+	[ "${role}x" == "masterx" ] && return 0 || return 1
 }
 
 check_quorum() {
@@ -150,12 +145,12 @@ check_quorum() {
 
 		for ip in ${iplist}; do
 			local v=$(redis-cli -h ${ip} -p ${port} ${command} 2>/dev/null | grep -e "^OK")
-			[ -z "${v}" ] && echo "[check_quorum] Quorum was not reached" >&2 && return 1
+			[ -z "${v}" ] && echo "[check_quorum] quorum was not reached" >&2 && return 1
 		done
-		echo "[check_quorum] Quorum was reached" >&2
+		echo "[check_quorum] quorum was reached" >&2
 
 	else
-		echo "[check_quorum] Sentinels quorum is not expected, ignoring." >&2
+		echo "[check_quorum] sentinels quorum is not expected, ignoring." >&2
 	fi
 
 	return 0
@@ -170,47 +165,51 @@ self_address=$(get_self_address)
 sentinel_ips=null
 
 case $REDIS_ROLE in
+	debug)
+		while true; do
+			echo "[debug] MASTER: $(find_master)"
+			echo "[debug] SENTINELS: $(find_sentinels)"
+			sleep 3
+		done
+	;;
 	sentinel)
 
-		if check_master "${REDIS_MASTER_HOSTNAME}"; then
-			master=${REDIS_MASTER_HOSTNAME}
-		else
-			# Find master
-			retries=10
-			master=null
-			while [ ${retries} -gt 0 ]; do
-				master=$(find_master)
-				[ "${master}x" != "nullx" ] && break
-				echo "[sentinel] Could not find master, waiting..."
-				retries=$((retries - 1))
-				sleep 5
-			done
-		fi
+		# Find master
+		retries=10
+		master=null
+		while [ ${retries} -gt 0 ]; do
+			master=$(find_master)
+			[ "${master}x" != "nullx" ] && break
+			echo "[sentinel] could not find master, waiting..."
+			retries=$((retries - 1))
+			sleep 5
+		done
+
 		if [ "${master}x" == "nullx" ]; then
 			abort "[sentinel] Error: Could not find master, exiting."
 		fi
 
-		cat <<-EOF > /sentinel.conf
+		cat <<-EOF > /tmp/sentinel.conf
 			port 26379
 			sentinel monitor ${REDIS_MASTER_NAME} ${master} 6379 ${SENTINELS_QUORUM}
 			sentinel down-after-milliseconds ${REDIS_MASTER_NAME} 5000
 			sentinel failover-timeout ${REDIS_MASTER_NAME} 60000
 			sentinel parallel-syncs ${REDIS_MASTER_NAME} 1
 			EOF
-		chown redis:redis /sentinel.conf
-		exec gosu redis redis-server /sentinel.conf --sentinel
+		chown redis:redis /tmp/sentinel.conf
+		exec gosu redis redis-server /tmp/sentinel.conf --sentinel
 	;;
 	init)
 		# Check if a master already exist
 		master=$(find_master)
 		if [ "${master}x" != "nullx" ]; then
-			echo "[init] A master already exist: ${master}"
+			echo "[init] a master already exist: ${master}"
 			sentinel_ips=$(find_sentinels)
-			echo "[init] Sentinels are: ${sentinel_ips}"
+			echo "[init] sentinels are: ${sentinel_ips}"
 			if [ "${sentinel_ips}x" != "nullx" ]; then
 				check_quorum "${sentinel_ips}" && \
-					echo "[init] Quorum is ok" || \
-					echo "[init] Quorum is not ok."
+					echo "[init] quorum is ok" || \
+					echo "[init] quorum is not ok."
 				for ip in ${sentinel_ips}; do
 					m=$(redis-cli -h ${ip} -p ${SENTINEL_PORT} SENTINEL get-master-addr-by-name ${REDIS_MASTER_NAME} | head -1)
 					echo "[init] sentinel=${ip}, master=${m:-null}"
@@ -219,13 +218,13 @@ case $REDIS_ROLE in
 			exit 0
 		fi
 
-		echo "[init] Starting redis-init..."
+		echo "[init] starting redis-init..."
 		rm -rf dump.rdb
 		redis-server --port 6379 &
 		sleep 5
 
 		while [ "$(redis-cli ping)x" != "PONGx" ]; do
-			echo "[init] Waiting redis-init startup..."
+			echo "[init] waiting redis-init startup..."
 			sleep 3
 		done
 
@@ -235,20 +234,20 @@ case $REDIS_ROLE in
 			[ "${v}x" != "nullx" ] && sentinel_ips=( ${v} )
 		done
 		sentinel_ips="${sentinel_ips[@]}"
-		echo "[init] Sentinels: ${sentinel_ips}"
+		echo "[init] sentinels: ${sentinel_ips}"
 
 		# Check quorum
 		if [ "${EXPECT_SENTINELS_QUORUM}" = "true" ]; then
 
 			retries=30
 			while ! check_quorum "${sentinel_ips}" && [ ${retries} -gt 0 ]; do
-				echo "[init] Waiting for sentinels to meet defined quorum..."
+				echo "[init] waiting for sentinels to meet defined quorum..."
 				retries=$((retries - 1))
 				sleep 3
 			done
 			if [ ${retries} -eq 0 ]; then
 				kill -9 `pidof redis-server`
-				abort "[init] Error: sentinels did not met quorum. Exiting."
+				abort "[init] error: sentinels did not met quorum. Exiting."
 			fi
 
 		fi
@@ -260,7 +259,7 @@ case $REDIS_ROLE in
 			i=0
 			while IFS= read -r LINE; do
 				eval ${LINE//,/ }
-				echo -n "[init] Pinging replica ${ip}... "
+				echo -n "[init] pinging replica ${ip}... "
 				redis-cli -h ${ip} PING >/dev/null 2>&1
 				if [ $? -eq 0 ]; then
 					echo "OK"
@@ -279,18 +278,18 @@ case $REDIS_ROLE in
 				break
 			fi
 
-			echo "[init] Waiting for all replicas to come up: ${replica_count:-0}/${NUM_OF_REPLICAS}"
+			echo "[init] waiting for all replicas to come up: ${replica_count:-0}/${NUM_OF_REPLICAS}"
 
 			retries=$((retries - 1))
 			sleep 1
 		done
 		if [ ${retries} -eq 0 ]; then
 			kill -9 `pidof redis-server`
-			abort "[init] Error: replicas failed to come up. Exiting."
+			abort "[init] error: replicas failed to come up. exiting."
 		fi
 
 		sleep 60
-		echo -n "[init] All replicas are up, forcing failover..."
+		echo -n "[init] all replicas are up, forcing failover..."
 		while ! \
 			redis-cli -h ${SENTINEL_HOSTNAME} -p ${SENTINEL_PORT} SENTINEL failover ${REDIS_MASTER_NAME}; do
 			sleep 3
@@ -301,10 +300,10 @@ case $REDIS_ROLE in
 		while [ ${retries} -gt 0 ]; do
 			new_master=$(find_master)
 			if [ "${new_master}x" != "nullx" -a ${new_master} != ${self_address} ]; then
-				echo "[init] Failover finished. New master is ${new_master}..."
+				echo "[init] failover finished. new master is ${new_master}..."
 				break
 			else
-				echo "[init] Waiting failover to finish..."
+				echo "[init] waiting failover to finish..."
 			fi
 			retries=$((retries - 1))
 			sleep 3
@@ -314,44 +313,44 @@ case $REDIS_ROLE in
 			abort "[init] Error: failover failed. Exiting."
 		fi
 
-		echo "[init] Shuting down redis-init instance:"
+		echo "[init] shuting down redis-init instance:"
 		redis-cli SHUTDOWN NOSAVE
 		sleep 60
 
-		echo "[init] Reseting sentinels:"
+		echo "[init] reseting sentinels:"
 		for ip in ${sentinel_ips}; do
 			redis-cli -h ${ip} -p ${SENTINEL_PORT} SENTINEL RESET ${REDIS_MASTER_NAME}
 		done
 
-		echo "[init] Done."
+		echo "[init] done."
 	;;
 	replica)
 		# Find sentinels
-		echo "[replica] Searching sentinels..."
+		echo "[replica] searching sentinels..."
 		sentinel_ips=$(find_sentinels)
 
 		# Check quorum
-		echo "[replica] Checking quorum..."
+		echo "[replica] checking quorum..."
 		check_quorum "${sentinel_ips}"
 
 		# Find master
 		retries=10
 		master=null
-		echo "[replica] Searching master..."
+		echo "[replica] searching master..."
 		while [ ${retries} -gt 0 ]; do
 			master=$(find_master)
-			echo "[replica] Found master: ${master}"
+			echo "[replica] found master: ${master}"
 			[ "${master}x" != "nullx" ] && break
 			retries=$((retries - 1))
 			sleep 5
 		done
 
-		echo "[replica] Starting replica..."
+		echo "[replica] starting replica..."
 		rm -rf dump.rdb
 		exec gosu redis redis-server --port 6379 --replicaof ${master} 6379
 	;;
 	*)
-		echo "Error: REDIS_ROLE must be of \"sentinel\" or \"init\" or \"replica\""
+		echo "error: REDIS_ROLE must be one of: \"sentinel\" | \"init\" | \"replica\" | \"debug\""
 		exit 1
 	;;
 esac
