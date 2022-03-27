@@ -1,11 +1,11 @@
 version: "3.7"
 services:
-  redis-init:
+  redis-pilot:
     image: local/redis-swarm
     environment:
-      REDIS_ROLE: init
-      NUM_OF_REPLICAS: 3
-      NUM_OF_SENTINELS: 3
+      REDIS_ROLE: pilot
+      REDIS_REPLICA_COUNT: 1
+      REDIS_SENTINEL_COUNT: 3
     networks:
       - net-redis
     deploy:
@@ -23,7 +23,7 @@ services:
       - net-redis
     deploy:
       mode: replicated
-      replicas: 3
+      replicas: 1
       endpoint_mode: dnsrr
 
   redis-sentinel:
