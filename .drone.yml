@@ -3,18 +3,32 @@ kind: pipeline
 name: redis-swarm
 
 steps:
-- name: publish
-  image: plugins/docker:linux-amd64
-  user: root
-  settings:
-    auto_tag: true
-    dockerfile: Dockerfile
-    repo: cekrdoso/redis-swarm
-    username:
-      from_secret: docker_username
-    password:
-      from_secret: docker_password
-  when:
-    event:
-    - push
-    - tag
+  - name: publish redis-swarm
+    image: plugins/docker:linux-amd64
+    user: root
+    settings:
+      auto_tag: true
+      dockerfile: Dockerfile
+      repo: cekrdoso/redis-swarm
+      username:
+        from_secret: docker_username
+      password:
+        from_secret: docker_password
+    when:
+      event:
+        - tag
+
+  - name: publish redis-haproxy
+    image: plugins/docker:linux-amd64
+    user: root
+    settings:
+      auto_tag: true
+      dockerfile: Dockerfile.haproxy
+      repo: cekrdoso/redis-haproxy
+      username:
+        from_secret: docker_username
+      password:
+        from_secret: docker_password
+    when:
+      event:
+        - tag
