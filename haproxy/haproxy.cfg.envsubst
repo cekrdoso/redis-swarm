@@ -1,0 +1,37 @@
+global
+    maxconn 1024
+
+defaults
+   mode tcp
+   timeout connect 3s
+   timeout server 6s
+   timeout client 6s
+
+resolvers mydns
+   nameserver dns1 127.0.0.11:53
+   accepted_payload_size 8192
+
+   hold valid    10s
+   hold other    30s
+   hold refused  30s
+   hold timeout  30s
+   hold obsolete 30s
+
+   resolve_retries 3
+   timeout retry 1s
+   timeout resolve 1s
+
+frontend fe_redis
+   bind *:$REDIS_REPLICA_PORT name redis-haproxy
+   default_backend be_redis
+
+backend be_redis
+   option tcp-check
+   tcp-check connect
+   tcp-check send PING\r\n
+   tcp-check expect string +PONG
+   tcp-check send info\ replication\r\n
+   tcp-check expect string role:master
+   tcp-check send QUIT\r\n
+   tcp-check expect string +OK
+   server-template redis_replica 1-$HAPROXY_SERVER_COUNT $REDIS_REPLICA_HOSTNAME:$REDIS_REPLICA_PORT check inter 1s fall 1 rise 1 resolvers mydns init-addr none

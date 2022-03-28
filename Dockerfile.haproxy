@@ -1,0 +1,15 @@
+FROM haproxy:2.4-alpine
+
+USER root
+
+COPY haproxy/haproxy.cfg.envsubst /usr/local/etc/haproxy/
+COPY haproxy/docker-entrypoint.sh /usr/local/bin/
+
+ENV HAPROXY_CFG_TEMPLATE=/usr/local/etc/haproxy/haproxy.cfg.envsubst
+
+RUN set -x \
+  && chmod +x /usr/local/bin/docker-entrypoint.sh \
+  && chown -R haproxy /usr/local/etc/haproxy \
+  && apk add --no-cache gettext
+
+USER haproxy
